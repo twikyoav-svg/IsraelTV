@@ -78,7 +78,8 @@ import java.util.regex.Pattern;
 public class MainActivity extends Activity {
 
     private static final String PREFS = "israeltv";
-    private static final String KEY_CHANNELS = "channels";
+    // v3: channels carry a direct stream + type (tv / radio). Older saved lists are ignored.
+    private static final String KEY_CHANNELS = "channels_v3";
     private static final String KEY_LAST = "last";
     private static final String KEY_FILL = "fill";
     private static final String KEY_DESKTOP = "desktop";
@@ -88,16 +89,49 @@ public class MainActivity extends Activity {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
                     + "Chrome/126.0.0.0 Safari/537.36";
 
-    /** Default channel list: {name, url}. Editable inside the app (long-press OK on a channel). */
+    private static final String KAN_HLS = "https://kancdn.medonecdn.net/livehls/oil/kancdn-live/live/";
+
+    /**
+     * Default channel list: {name, site page, stream, type}.
+     * stream = candidates separated by " | ": a direct URL, or "sniff" = find the stream on the
+     * site page at play time. If every candidate fails, the site page itself is shown.
+     * Editable inside the app (long-press OK on a channel).
+     */
     private static final String[][] DEFAULT_CHANNELS = {
-            {"כאן 11", "https://www.kan.org.il/live/"},
-            {"קשת 12", "https://www.mako.co.il/mako-vod-live-tv/VOD-6540b8dcb64fd31006.htm"},
-            {"רשת 13", "https://13tv.co.il/live/"},
-            {"עכשיו 14", "https://www.c14.co.il/live"},
-            {"i24NEWS", "https://www.i24news.tv/he/tv/live"},
-            {"כאן חינוכית", "https://www.kankids.org.il/live"},
-            {"ערוץ הכנסת", "https://www.knesset.tv/live/"},
+            {"כאן 11", "https://www.kan.org.il/live/",
+                    KAN_HLS + "kan11/live.livx/playlist.m3u8?renditions&fmp4&relativePaths | sniff", "tv"},
+            {"קשת 12", "https://www.mako.co.il/mako-vod-live-tv/VOD-6540b8dcb64fd31006.htm", "sniff", "tv"},
+            {"רשת 13", "https://13tv.co.il/live/",
+                    "https://d2xg1g9o5vns8m.cloudfront.net/out/v1/0855d703f7d5436fae6a9c7ce8ca5075/index.m3u8 | sniff", "tv"},
+            {"עכשיו 14", "https://www.c14.co.il/live",
+                    "https://r.il.cdn-redge.media/livehls/oil/ch14/live/ch14/live.livx/playlist.m3u8 | sniff", "tv"},
+            {"i24NEWS", "https://www.i24news.tv/he/tv/live",
+                    "https://i24newshebrew-cdn.encoders.immergo.tv/master.m3u8 | sniff", "tv"},
+            {"כאן חינוכית", "https://www.kankids.org.il/live",
+                    KAN_HLS + "kan_edu/live.livx/playlist.m3u8?renditions&fmp4 | sniff", "tv"},
+            {"ערוץ הכנסת", "https://www.knesset.tv/live/", "sniff", "tv"},
+
+            {"גלגלצ", "https://glz.co.il/גלגלצ",
+                    "https://glzwizzlv.bynetcdn.com/glglz_mp3?awCollectionId=misc&awEpisodeId=glglz"
+                            + " | https://api.bynetcdn.com/Redirector/glz/glglz/ICE-LIVE", "radio"},
+            {"גלצ", "https://glz.co.il/גלצ",
+                    "https://api.bynetcdn.com/Redirector/glz/glz/ICE-LIVE"
+                            + " | https://glzwizzlv.bynetcdn.com/glz_mp3?awCollectionId=misc&awEpisodeId=glz", "radio"},
+            {"99FM", "https://eco99fm.maariv.co.il/",
+                    "https://99.mediacast.co.il/99fm_aac | https://99.mediacast.co.il/99fm?.mp3", "radio"},
+            {"רשת ב", "https://www.kan.org.il/live/",
+                    KAN_HLS + "radio/kan_reshet_bet/live.livx/playlist.m3u8?renditions", "radio"},
+            {"רשת ג", "https://www.kan.org.il/live/",
+                    KAN_HLS + "radio/kan_gimel/live.livx/playlist.m3u8?renditions", "radio"},
+            {"88FM", "https://www.kan.org.il/live/",
+                    KAN_HLS + "radio/kan_88/live.livx/playlist.m3u8?renditions", "radio"},
+            {"100FM", "https://www.100fm.co.il/live/",
+                    "https://cdn.cybercdn.live/Radios_100FM/Audio/playlist.m3u8"
+                            + " | https://cdn.cybercdn.live/Radios_100FM/Audio/icecast.audio", "radio"},
     };
+
+    /** Channel fields. */
+    private static final int C_NAME = 0, C_PAGE = 1, C_STREAM = 2, C_TYPE = 3;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<String[]> channels = new ArrayList<>();
@@ -182,10 +216,18 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (webView != null) webView.onResume();
+        if (resumeNative && current >= 0) playChannel(current); // live: jump back to "now"
+        resumeNative = false;
     }
+
+    private boolean resumeNative = false;
 
     @Override
     protected void onPause() {
+        if (nativeActive) {
+            resumeNative = true;
+            stopNative();
+        }
         if (webView != null) {
             webView.evaluateJavascript(
                     "document.querySelectorAll('video').forEach(function(v){v.pause();});", null);
@@ -197,6 +239,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        if (player != null) {
+            player.release();
+            player = null;
+        }
         if (webView != null) {
             webView.stopLoading();
             webView.destroy();
@@ -214,14 +260,15 @@ public class MainActivity extends Activity {
                 JSONArray arr = new JSONArray(json);
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject o = arr.getJSONObject(i);
-                    channels.add(new String[]{o.getString("name"), o.getString("url")});
+                    channels.add(new String[]{o.getString("name"), o.getString("url"),
+                            o.optString("stream", ""), o.optString("type", "tv")});
                 }
             } catch (Exception ignored) {
                 channels.clear();
             }
         }
         if (channels.isEmpty()) {
-            for (String[] c : DEFAULT_CHANNELS) channels.add(new String[]{c[0], c[1]});
+            for (String[] c : DEFAULT_CHANNELS) channels.add(c.clone());
         }
     }
 
@@ -230,8 +277,10 @@ public class MainActivity extends Activity {
         try {
             for (String[] c : channels) {
                 JSONObject o = new JSONObject();
-                o.put("name", c[0]);
-                o.put("url", c[1]);
+                o.put("name", c[C_NAME]);
+                o.put("url", c[C_PAGE]);
+                o.put("stream", c[C_STREAM]);
+                o.put("type", c[C_TYPE]);
                 arr.put(o);
             }
         } catch (Exception ignored) {
@@ -325,6 +374,7 @@ public class MainActivity extends Activity {
         });
         root.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        buildPlayerUi();
 
         // --- container for HTML5 fullscreen video
         fullscreenContainer = new FrameLayout(this);
@@ -436,12 +486,26 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    private final List<View> channelButtons = new ArrayList<>();
+
+    private boolean isRadio(int idx) {
+        return idx >= 0 && idx < channels.size() && "radio".equals(channels.get(idx)[C_TYPE]);
+    }
+
     private void rebuildList() {
         channelListView.removeAllViews();
+        channelButtons.clear();
+        addSectionLabel("📺  טלוויזיה");
+        boolean radioHeader = false;
         for (int i = 0; i < channels.size(); i++) {
             final int idx = i;
-            String label = (i + 1) + "   " + channels.get(i)[0] + (i == current ? "   ▶" : "");
+            if (isRadio(i) && !radioHeader) {
+                addSectionLabel("📻  רדיו");
+                radioHeader = true;
+            }
+            String label = (i + 1) + "   " + channels.get(i)[C_NAME] + (i == current ? "   ▶" : "");
             Button b = makeButton(label, i == current);
+            channelButtons.add(b);
             b.setOnClickListener(v -> {
                 hideOverlay();
                 playChannel(idx);
@@ -454,6 +518,18 @@ public class MainActivity extends Activity {
         }
 
         addSectionLabel("פעולות");
+
+        if (current >= 0 && !isRadio(current)) {
+            Button site = makeButton(nativeActive
+                    ? "🌐  פתיחת הערוץ דרך האתר (אם יש בעיה בנגן)"
+                    : "▶  ניסיון בנגן הישיר", false);
+            site.setOnClickListener(v -> {
+                hideOverlay();
+                if (nativeActive) playWeb(current, null);
+                else playChannel(current);
+            });
+            channelListView.addView(site);
+        }
 
         Button vod = makeButton("🎬  ספריית VOD – לפי זמנים / לפי תכניות", false);
         vod.setOnClickListener(v -> {
@@ -536,9 +612,9 @@ public class MainActivity extends Activity {
     }
 
     private void focusFirst() {
-        int target = (current >= 0 && current < channelListView.getChildCount()) ? current : 0;
-        View v = channelListView.getChildAt(target);
-        if (v != null) v.requestFocus();
+        if (channelButtons.isEmpty()) return;
+        int target = (current >= 0 && current < channelButtons.size()) ? current : 0;
+        channelButtons.get(target).requestFocus();
     }
 
     private void showOverlay() {
@@ -577,12 +653,23 @@ public class MainActivity extends Activity {
         url.setHint("https://...");
         url.setSingleLine(true);
         url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        final EditText stream = new EditText(this);
+        stream.setHint("קישור ישיר לשידור (לא חובה) – .m3u8 / mp3");
+        stream.setSingleLine(true);
+        stream.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        final android.widget.CheckBox radio = new android.widget.CheckBox(this);
+        radio.setText("תחנת רדיו");
         if (!isNew) {
-            name.setText(channels.get(idx)[0]);
-            url.setText(channels.get(idx)[1]);
+            name.setText(channels.get(idx)[C_NAME]);
+            url.setText(channels.get(idx)[C_PAGE]);
+            stream.setText(channels.get(idx)[C_STREAM]);
+            radio.setChecked(isRadio(idx));
         }
+        url.setHint("כתובת האתר של הערוץ https://...");
         box.addView(name);
         box.addView(url);
+        box.addView(stream);
+        box.addView(radio);
 
         AlertDialog.Builder b = new AlertDialog.Builder(this)
                 .setTitle(isNew ? "ערוץ חדש" : "עריכת ערוץ")
@@ -592,8 +679,10 @@ public class MainActivity extends Activity {
                     String u = url.getText().toString().trim();
                     if (n.isEmpty() || u.isEmpty()) return;
                     if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
-                    if (isNew) channels.add(new String[]{n, u});
-                    else channels.set(idx, new String[]{n, u});
+                    String[] ch = {n, u, stream.getText().toString().trim(), radio.isChecked() ? "radio" : "tv"};
+                    if (isNew) channels.add(ch);
+                    else channels.set(idx, ch);
+                    streamCache.remove(n);
                     saveChannels();
                     rebuildList();
                     focusFirst();
@@ -615,6 +704,10 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- playback
 
+    /**
+     * Plays a channel: first the direct-stream candidates in the native player (instant, no site),
+     * and if they all fail, the channel's web page.
+     */
     private void playChannel(int idx) {
         if (channels.isEmpty()) return;
         idx = ((idx % channels.size()) + channels.size()) % channels.size();
@@ -622,13 +715,325 @@ public class MainActivity extends Activity {
         vodPlaying = false;
         current = idx;
         prefs.edit().putInt(KEY_LAST, idx).apply();
-        String[] c = channels.get(idx);
-        showBanner((idx + 1) + "  ·  " + c[0] + "\n← → = מצב עכבר  ·  OK = רשימת ערוצים");
-        handler.removeCallbacks(tweakRunner);
         handler.removeCallbacks(switchRunner);
         pendingChannel = -1;
+        String[] c = channels.get(idx);
+        List<String> cands = new ArrayList<>();
+        for (String part : c[C_STREAM].split("\\|")) {
+            String t = part.trim();
+            if (!t.isEmpty()) cands.add(t);
+        }
+        if (cands.isEmpty()) {
+            playWeb(idx, null);
+            return;
+        }
+        // Stop the web player while the native one starts.
+        handler.removeCallbacks(tweakRunner);
         webView.stopLoading();
-        webView.loadUrl(c[1]);
+        webView.loadUrl("about:blank");
+        exitCustomView();
+        showBanner((idx + 1) + "  ·  " + c[C_NAME] + (isRadio(idx) ? "" : "\nOK = רשימת ערוצים"));
+        tryCandidate(++playGen, idx, cands, 0);
+    }
+
+    /** Shows the channel's web page in the WebView (the original mode). */
+    private void playWeb(int idx, String note) {
+        stopNative();
+        if (idx < 0 || idx >= channels.size()) return;
+        String[] c = channels.get(idx);
+        showBanner((note != null ? note + "\n" : "") + (idx + 1) + "  ·  " + c[C_NAME]
+                + "\n← → = מצב עכבר  ·  OK = רשימת ערוצים");
+        handler.removeCallbacks(tweakRunner);
+        webView.setVisibility(View.VISIBLE);
+        webView.stopLoading();
+        webView.loadUrl(c[C_PAGE]);
+    }
+
+    // ================================================================ native player
+
+    private androidx.media3.exoplayer.ExoPlayer player;
+    private androidx.media3.ui.PlayerView playerView;
+    private LinearLayout radioPanel;
+    private TextView radioName, radioStatus;
+    private boolean nativeActive = false;
+    private int playGen = 0;
+    /** Streams found on a site ("sniff"), reused for a while because they usually carry a token. */
+    private final Map<String, String[]> streamCache = new HashMap<>(); // name -> {url, timeMillis}
+    private static final long STREAM_CACHE_MS = 15 * 60 * 1000;
+
+    private void buildPlayerUi() {
+        playerView = new androidx.media3.ui.PlayerView(this);
+        playerView.setUseController(false);
+        playerView.setBackgroundColor(Color.BLACK);
+        playerView.setShutterBackgroundColor(Color.BLACK);
+        playerView.setKeepContentOnPlayerReset(false);
+        playerView.setFocusable(false);
+        playerView.setVisibility(View.GONE);
+        // index 1: above the WebView, below everything else
+        root.addView(playerView, 1, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        radioPanel = new LinearLayout(this);
+        radioPanel.setOrientation(LinearLayout.VERTICAL);
+        radioPanel.setGravity(Gravity.CENTER);
+        radioPanel.setBackgroundColor(0xFF081428);
+        radioPanel.setVisibility(View.GONE);
+        TextView icon = new TextView(this);
+        icon.setText("📻");
+        icon.setTextSize(TypedValue.COMPLEX_UNIT_SP, 72);
+        icon.setGravity(Gravity.CENTER);
+        radioPanel.addView(icon);
+        radioName = new TextView(this);
+        radioName.setTextColor(Color.WHITE);
+        radioName.setTextSize(TypedValue.COMPLEX_UNIT_SP, 44);
+        radioName.setTypeface(Typeface.DEFAULT_BOLD);
+        radioName.setGravity(Gravity.CENTER);
+        radioPanel.addView(radioName);
+        radioStatus = new TextView(this);
+        radioStatus.setTextColor(0xFFAFC4E6);
+        radioStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        radioStatus.setGravity(Gravity.CENTER);
+        radioStatus.setPadding(0, dp(12), 0, 0);
+        radioPanel.addView(radioStatus);
+        TextView hint = new TextView(this);
+        hint.setText("למעלה/למטה = תחנה הבאה  ·  OK = רשימה  ·  חזור = יציאה");
+        hint.setTextColor(0xFF6F84A8);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, dp(40), 0, 0);
+        radioPanel.addView(hint);
+        root.addView(radioPanel, 2, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private androidx.media3.exoplayer.ExoPlayer ensurePlayer() {
+        if (player == null) {
+            player = new androidx.media3.exoplayer.ExoPlayer.Builder(this).build();
+            playerView.setPlayer(player);
+        }
+        return player;
+    }
+
+    private void stopNative() {
+        playGen++;
+        handler.removeCallbacks(nativeTimeout);
+        nativeActive = false;
+        if (player != null) {
+            player.stop();
+            player.clearMediaItems();
+            if (playerListener != null) player.removeListener(playerListener);
+            playerListener = null;
+        }
+        stopSniff();
+        if (playerView != null) playerView.setVisibility(View.GONE);
+        if (radioPanel != null) radioPanel.setVisibility(View.GONE);
+    }
+
+    private androidx.media3.common.Player.Listener playerListener;
+    private Runnable nativeTimeout = () -> { };
+
+    private void tryCandidate(int gen, int idx, List<String> cands, int i) {
+        if (gen != playGen) return;
+        if (i >= cands.size()) {
+            if (isRadio(idx)) {
+                stopNative();
+                showRadioPanel(idx, "לא הצלחתי לנגן את התחנה כרגע. אפשר לנסות שוב בעוד רגע (OK ← טעינה מחדש).");
+            } else {
+                playWeb(idx, "הנגן הישיר לא זמין – פותח את אתר הערוץ");
+            }
+            return;
+        }
+        String cand = cands.get(i);
+        String name = channels.get(idx)[C_NAME];
+        String page = channels.get(idx)[C_PAGE];
+        if ("sniff".equalsIgnoreCase(cand)) {
+            String[] cached = streamCache.get(name);
+            if (cached != null && System.currentTimeMillis() - Long.parseLong(cached[1]) < STREAM_CACHE_MS) {
+                playNative(gen, idx, cached[0], page, () -> {
+                    streamCache.remove(name);
+                    sniffThen(gen, idx, cands, i);
+                });
+            } else {
+                sniffThen(gen, idx, cands, i);
+            }
+        } else {
+            playNative(gen, idx, cand, page, () -> tryCandidate(gen, idx, cands, i + 1));
+        }
+    }
+
+    private void sniffThen(int gen, int idx, List<String> cands, int i) {
+        if (isRadio(idx)) setRadioStatus("מחפש את השידור באתר…");
+        sniff(channels.get(idx)[C_PAGE], url -> {
+            if (gen != playGen) return;
+            if (url == null) {
+                tryCandidate(gen, idx, cands, i + 1);
+                return;
+            }
+            streamCache.put(channels.get(idx)[C_NAME],
+                    new String[]{url, String.valueOf(System.currentTimeMillis())});
+            playNative(gen, idx, url, channels.get(idx)[C_PAGE], () -> tryCandidate(gen, idx, cands, i + 1));
+        });
+    }
+
+    /** Plays url natively; calls onFail if it errors or does not start within the timeout. */
+    private void playNative(int gen, int idx, String url, String referer, Runnable onFail) {
+        if (gen != playGen) return;
+        androidx.media3.exoplayer.ExoPlayer p = ensurePlayer();
+        if (playerListener != null) p.removeListener(playerListener);
+        handler.removeCallbacks(nativeTimeout);
+
+        Map<String, String> headers = new HashMap<>();
+        if (referer != null && referer.startsWith("http")) {
+            headers.put("Referer", referer);
+            try {
+                java.net.URL r = new java.net.URL(referer);
+                headers.put("Origin", r.getProtocol() + "://" + r.getHost());
+            } catch (Exception ignored) {
+            }
+        }
+        String cookies = CookieManager.getInstance().getCookie(url);
+        if (cookies != null) headers.put("Cookie", cookies);
+        androidx.media3.datasource.DefaultHttpDataSource.Factory http =
+                new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                        .setUserAgent(DESKTOP_UA)
+                        .setAllowCrossProtocolRedirects(true)
+                        .setConnectTimeoutMs(10000)
+                        .setReadTimeoutMs(15000)
+                        .setDefaultRequestProperties(headers);
+        androidx.media3.exoplayer.source.DefaultMediaSourceFactory msf =
+                new androidx.media3.exoplayer.source.DefaultMediaSourceFactory(this)
+                        .setDataSourceFactory(http);
+        androidx.media3.common.MediaItem.Builder mi = new androidx.media3.common.MediaItem.Builder().setUri(url);
+        if (url.toLowerCase(Locale.US).contains(".m3u8")) mi.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8);
+
+        final boolean[] done = {false};
+        playerListener = new androidx.media3.common.Player.Listener() {
+            @Override
+            public void onPlaybackStateChanged(int state) {
+                if (gen != playGen) return;
+                if (state == androidx.media3.common.Player.STATE_READY && !done[0]) {
+                    done[0] = true;
+                    handler.removeCallbacks(nativeTimeout);
+                    if (isRadio(idx)) setRadioStatus("מנגן ♪");
+                }
+            }
+
+            @Override
+            public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                if (gen != playGen) return;
+                handler.removeCallbacks(nativeTimeout);
+                if (!done[0]) {
+                    done[0] = true;
+                    onFail.run();
+                } else {
+                    // Was playing and dropped (network hiccup): restart this channel.
+                    handler.postDelayed(() -> {
+                        if (gen == playGen) playChannel(idx);
+                    }, 1500);
+                }
+            }
+        };
+        p.addListener(playerListener);
+        nativeTimeout = () -> {
+            if (gen == playGen && !done[0]) {
+                done[0] = true;
+                p.stop();
+                onFail.run();
+            }
+        };
+        handler.postDelayed(nativeTimeout, 15000);
+
+        nativeActive = true;
+        if (isRadio(idx)) {
+            playerView.setVisibility(View.GONE);
+            showRadioPanel(idx, "מתחבר…");
+        } else {
+            radioPanel.setVisibility(View.GONE);
+            playerView.setVisibility(View.VISIBLE);
+        }
+        p.setMediaSource(msf.createMediaSource(mi.build()));
+        p.setPlayWhenReady(true);
+        p.prepare();
+    }
+
+    private void showRadioPanel(int idx, String status) {
+        radioName.setText(channels.get(idx)[C_NAME]);
+        radioStatus.setText(status);
+        radioPanel.setVisibility(View.VISIBLE);
+        playerView.setVisibility(View.GONE);
+    }
+
+    private void setRadioStatus(String s) {
+        if (radioStatus != null) radioStatus.setText(s);
+    }
+
+    // ---- "sniff": open the site in the hidden WebView and catch the first video playlist it requests
+
+    interface SniffCallback {
+        void found(String url);
+    }
+
+    private volatile boolean sniffing = false;
+    private int sniffId = 0;
+    private SniffCallback sniffCallback;
+
+    private void sniff(String page, SniffCallback cb) {
+        cancelScrape();
+        stopSniff();
+        final int id = ++sniffId;
+        sniffCallback = cb;
+        sniffing = true;
+        scraper.getSettings().setMediaPlaybackRequiresUserGesture(false);
+        scraper.loadUrl(page);
+        // Nudge players that wait for a click.
+        Runnable nudge = new Runnable() {
+            int n = 0;
+
+            @Override
+            public void run() {
+                if (id != sniffId || !sniffing) return;
+                scraper.evaluateJavascript("(function(){try{" + COOKIE_SCRIPT
+                        + "document.querySelectorAll('video').forEach(function(v){v.muted=true;"
+                        + "var p=v.play&&v.play();if(p&&p.catch)p.catch(function(){});});"
+                        + "var b=document.querySelector('.vjs-big-play-button,.jw-display-icon-container,"
+                        + "button[aria-label*=\"play\" i],button[aria-label*=\"נגן\"],[class*=\"bigPlay\" i],[class*=\"play-button\" i]');"
+                        + "if(b&&!b.__itvS){b.__itvS=1;b.click();}}catch(e){}})();", null);
+                if (++n < 20) handler.postDelayed(this, 1000);
+            }
+        };
+        handler.postDelayed(nudge, 1500);
+        handler.postDelayed(() -> {
+            if (id == sniffId && sniffing) onSniffResult(id, null);
+        }, 20000);
+    }
+
+    /** Called from the scraper's network thread for every request while sniffing. */
+    private void sniffRequest(String url) {
+        if (!sniffing || url == null) return;
+        String u = url.toLowerCase(Locale.US);
+        if (!u.contains(".m3u8")) return;
+        if (u.contains("/ads") || u.contains("advert") || u.contains("preroll") || u.contains("doubleclick")) return;
+        final int id = sniffId;
+        sniffing = false;
+        handler.post(() -> onSniffResult(id, url));
+    }
+
+    private void onSniffResult(int id, String url) {
+        if (id != sniffId) return;
+        SniffCallback cb = sniffCallback;
+        stopSniff();
+        if (cb != null) cb.found(url);
+    }
+
+    private void stopSniff() {
+        sniffId++;
+        sniffing = false;
+        sniffCallback = null;
+        if (scraper != null) {
+            scraper.stopLoading();
+            scraper.loadUrl("about:blank");
+            scraper.getSettings().setMediaPlaybackRequiresUserGesture(true);
+        }
     }
 
     // ---- fast zapping: show the target immediately, load only when the user stops pressing.
@@ -645,7 +1050,12 @@ public class MainActivity extends Activity {
         if (channels.isEmpty()) return;
         int n = channels.size();
         int base = pendingChannel >= 0 ? pendingChannel : Math.max(current, 0);
-        int target = ((base + delta) % n + n) % n;
+        boolean radio = isRadio(base);
+        int target = base;
+        for (int k = 0; k < n; k++) { // next channel of the same kind (TV / radio)
+            target = ((target + delta) % n + n) % n;
+            if (isRadio(target) == radio) break;
+        }
         pendingChannel = target;
         showBanner((target + 1) + "  ·  " + channels.get(target)[0]);
         handler.removeCallbacks(switchRunner);
@@ -744,6 +1154,11 @@ public class MainActivity extends Activity {
     }
 
     private void togglePlayPause() {
+        if (nativeActive && player != null) {
+            player.setPlayWhenReady(!player.getPlayWhenReady());
+            showBanner(player.getPlayWhenReady() ? "▶" : "⏸");
+            return;
+        }
         webView.evaluateJavascript("(function(){var vs=document.querySelectorAll('video');"
                 + "vs.forEach(function(v){if(v.paused)v.play();else v.pause();});})();", null);
     }
@@ -761,6 +1176,12 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- mouse mode
 
     private void setCursorMode(boolean on) {
+        if (on && nativeActive) {
+            // Nothing to click: the channel plays in the built-in player, not a web page.
+            if (current >= 0) showBanner((current + 1) + "  ·  " + channels.get(current)[C_NAME]
+                    + "\nOK = רשימת ערוצים  ·  למעלה/למטה = החלפה");
+            return;
+        }
         cursorMode = on;
         if (on) {
             if (cursorX == 0 && cursorY == 0) {
@@ -838,6 +1259,7 @@ public class MainActivity extends Activity {
 
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (sniffing) sniffRequest(request.getUrl().toString());
                 return blockSlow && isSlowHost(request.getUrl().getHost()) ? emptyResponse() : null;
             }
 
@@ -1203,6 +1625,7 @@ public class MainActivity extends Activity {
     // ---- playback of VOD items
 
     private void playVod(Item item) {
+        stopNative();
         cancelScrape();
         exitCustomView();
         vodPlaying = true;
