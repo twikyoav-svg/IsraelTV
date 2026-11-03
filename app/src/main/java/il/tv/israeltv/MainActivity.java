@@ -79,7 +79,7 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "israeltv";
     // v3: channels carry a direct stream + type (tv / radio). Older saved lists are ignored.
-    private static final String KEY_CHANNELS = "channels_v3";
+    private static final String KEY_CHANNELS = "channels_v4";
     private static final String KEY_LAST = "last";
     private static final String KEY_FILL = "fill";
     private static final String KEY_DESKTOP = "desktop";
@@ -99,16 +99,19 @@ public class MainActivity extends Activity {
      */
     private static final String[][] DEFAULT_CHANNELS = {
             {"כאן 11", "https://www.kan.org.il/live/",
-                    KAN_HLS + "kan11/live.livx/playlist.m3u8?renditions&fmp4&relativePaths | sniff", "tv"},
+                    KAN_HLS + "kan11/live.livx/playlist.m3u8?renditions&fmp4&relativePaths&dvr=7200000"
+                            + " | " + KAN_HLS + "kan11/live.livx/playlist.m3u8?renditions&fmp4&relativePaths | sniff", "tv"},
             {"קשת 12", "https://www.mako.co.il/mako-vod-live-tv/VOD-6540b8dcb64fd31006.htm", "sniff", "tv"},
             {"רשת 13", "https://13tv.co.il/live/",
                     "https://d2xg1g9o5vns8m.cloudfront.net/out/v1/0855d703f7d5436fae6a9c7ce8ca5075/index.m3u8 | sniff", "tv"},
             {"עכשיו 14", "https://www.c14.co.il/live",
-                    "https://r.il.cdn-redge.media/livehls/oil/ch14/live/ch14/live.livx/playlist.m3u8 | sniff", "tv"},
+                    "https://r.il.cdn-redge.media/livehls/oil/ch14/live/ch14/live.livx/playlist.m3u8?dvr=7200000"
+                            + " | https://r.il.cdn-redge.media/livehls/oil/ch14/live/ch14/live.livx/playlist.m3u8 | sniff", "tv"},
             {"i24NEWS", "https://www.i24news.tv/he/tv/live",
                     "https://i24newshebrew-cdn.encoders.immergo.tv/master.m3u8 | sniff", "tv"},
             {"כאן חינוכית", "https://www.kankids.org.il/live",
-                    KAN_HLS + "kan_edu/live.livx/playlist.m3u8?renditions&fmp4 | sniff", "tv"},
+                    KAN_HLS + "kan_edu/live.livx/playlist.m3u8?renditions&fmp4&dvr=7200000"
+                            + " | " + KAN_HLS + "kan_edu/live.livx/playlist.m3u8?renditions&fmp4 | sniff", "tv"},
             {"ערוץ הכנסת", "https://www.knesset.tv/live/", "sniff", "tv"},
 
             {"גלגלצ", "https://glz.co.il/גלגלצ",
@@ -120,11 +123,14 @@ public class MainActivity extends Activity {
             {"99FM", "https://eco99fm.maariv.co.il/",
                     "https://99.mediacast.co.il/99fm_aac | https://99.mediacast.co.il/99fm?.mp3", "radio"},
             {"רשת ב", "https://www.kan.org.il/live/",
-                    KAN_HLS + "radio/kan_reshet_bet/live.livx/playlist.m3u8?renditions", "radio"},
+                    KAN_HLS + "radio/kan_reshet_bet/live.livx/playlist.m3u8?renditions&dvr=7200000"
+                            + " | " + KAN_HLS + "radio/kan_reshet_bet/live.livx/playlist.m3u8?renditions", "radio"},
             {"רשת ג", "https://www.kan.org.il/live/",
-                    KAN_HLS + "radio/kan_gimel/live.livx/playlist.m3u8?renditions", "radio"},
+                    KAN_HLS + "radio/kan_gimel/live.livx/playlist.m3u8?renditions&dvr=7200000"
+                            + " | " + KAN_HLS + "radio/kan_gimel/live.livx/playlist.m3u8?renditions", "radio"},
             {"88FM", "https://www.kan.org.il/live/",
-                    KAN_HLS + "radio/kan_88/live.livx/playlist.m3u8?renditions", "radio"},
+                    KAN_HLS + "radio/kan_88/live.livx/playlist.m3u8?renditions&dvr=7200000"
+                            + " | " + KAN_HLS + "radio/kan_88/live.livx/playlist.m3u8?renditions", "radio"},
             {"100FM", "https://www.100fm.co.il/live/",
                     "https://cdn.cybercdn.live/Radios_100FM/Audio/playlist.m3u8"
                             + " | https://cdn.cybercdn.live/Radios_100FM/Audio/icecast.audio", "radio"},
@@ -163,6 +169,7 @@ public class MainActivity extends Activity {
     /** One row in a VOD list. */
     static class Item {
         String title, url, sub;
+        long start;
         boolean enabled = true;
 
         Item(String title, String url, String sub) {
@@ -525,6 +532,27 @@ public class MainActivity extends Activity {
 
         addSectionLabel("פעולות");
 
+        if (nativeActive && player != null) {
+            Button fromStart = makeButton("⏮  צפייה מתחילת התוכנית", false);
+            fromStart.setOnClickListener(v -> {
+                hideOverlay();
+                watchFromStart();
+            });
+            channelListView.addView(fromStart);
+            Button pause = makeButton(player.getPlayWhenReady() ? "⏸  השהיה" : "▶  המשך צפייה", false);
+            pause.setOnClickListener(v -> {
+                hideOverlay();
+                togglePlayPause();
+            });
+            channelListView.addView(pause);
+            Button live = makeButton("●  חזרה לשידור החי", false);
+            live.setOnClickListener(v -> {
+                hideOverlay();
+                goLive();
+            });
+            channelListView.addView(live);
+        }
+
         if (current >= 0 && !isRadio(current)) {
             Button site = makeButton(nativeActive
                     ? "🌐  פתיחת הערוץ דרך האתר (אם יש בעיה בנגן)"
@@ -802,7 +830,7 @@ public class MainActivity extends Activity {
         radioStatus.setPadding(0, dp(12), 0, 0);
         radioPanel.addView(radioStatus);
         TextView hint = new TextView(this);
-        hint.setText("למעלה/למטה = תחנה הבאה  ·  OK = רשימה  ·  חזור = יציאה");
+        hint.setText("למעלה/למטה = תחנה הבאה  ·  ימינה/שמאלה = אחורה/קדימה  ·  OK = רשימה");
         hint.setTextColor(0xFF6F84A8);
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         hint.setGravity(Gravity.CENTER);
@@ -1015,6 +1043,119 @@ public class MainActivity extends Activity {
         p.setMediaSource(msf.createMediaSource(mi.build()));
         p.setPlayWhenReady(true);
         p.prepare();
+    }
+
+    // ---- timeshift: move inside the live window the channel keeps on its server
+
+    private androidx.media3.common.Timeline.Window liveWindow() {
+        if (player == null) return null;
+        androidx.media3.common.Timeline tl = player.getCurrentTimeline();
+        if (tl.isEmpty()) return null;
+        androidx.media3.common.Timeline.Window w = new androidx.media3.common.Timeline.Window();
+        tl.getWindow(player.getCurrentMediaItemIndex(), w);
+        return w;
+    }
+
+    /** How far back the channel lets us go, in ms (0 = no timeshift). */
+    private long liveWindowMs() {
+        androidx.media3.common.Timeline.Window w = liveWindow();
+        if (w == null || !w.isSeekable) return 0;
+        long d = w.getDurationMs();
+        return d == androidx.media3.common.C.TIME_UNSET ? 0 : d;
+    }
+
+    private static String fmtDur(long ms) {
+        long s = Math.max(0, ms / 1000);
+        long h = s / 3600, m = (s % 3600) / 60, sec = s % 60;
+        return h > 0 ? String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
+                : String.format(Locale.US, "%d:%02d", m, sec);
+    }
+
+    private void liveSeekBy(long deltaMs) {
+        if (player == null) return;
+        long dur = liveWindowMs();
+        if (dur < 30_000) {
+            showBanner("בערוץ הזה אין אפשרות לחזור אחורה");
+            return;
+        }
+        long target = player.getCurrentPosition() + deltaMs;
+        if (target >= dur - 8_000) {
+            goLive();
+            return;
+        }
+        player.seekTo(Math.max(0, target));
+        showTimeshiftBanner(target <= 0 ? "⏮ הנקודה המוקדמת ביותר" : (deltaMs < 0 ? "⏪" : "⏩"));
+    }
+
+    private void showTimeshiftBanner(String prefix) {
+        long dur = liveWindowMs();
+        long behind = Math.max(0, dur - (player == null ? 0 : player.getCurrentPosition()));
+        String where = behind < 10_000 ? "● שידור חי" : fmtDur(behind) + " מאחורי השידור החי";
+        showBanner(prefix + "  " + where + "\nאפשר לחזור עד " + fmtDur(dur) + " אחורה  ·  OK ארוך = השהיה");
+    }
+
+    private void goLive() {
+        if (player == null) return;
+        player.seekToDefaultPosition();
+        player.setPlayWhenReady(true);
+        showBanner("● שידור חי");
+    }
+
+    /** Jumps to the start of the current program (Kan channels use their schedule; others go as far back as possible). */
+    private void watchFromStart() {
+        if (player == null || current < 0) return;
+        if (liveWindowMs() < 30_000) {
+            showBanner("בערוץ הזה אין אפשרות לחזור אחורה");
+            return;
+        }
+        String kanId = null;
+        for (VodSource src : VodSource.ALL) {
+            if (src.timeMode == VodSource.TIME_KAN_SCHEDULE && src.name.equals(channels.get(current)[C_NAME])) {
+                kanId = src.timeArg;
+            }
+        }
+        final int gen = playGen;
+        if (kanId == null) {
+            seekToWallClock(gen, 0, null);
+            return;
+        }
+        final String id = kanId;
+        showBanner("מחפש את תחילת התוכנית…");
+        new Thread(() -> {
+            Item now = null;
+            try {
+                int offset = TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60000;
+                String day = new SimpleDateFormat("dd-MM-yyyy", Locale.US).format(new Date());
+                List<Item> items = parseKanSchedule(httpGet(
+                        "https://www.kan.org.il/umbraco/surface/LoadBroadcastSchedule/LoadSchedule"
+                                + "?day=" + day + "&channelId=" + id + "&currentPageId=1517", offset));
+                long t = System.currentTimeMillis();
+                for (Item it : items) if (it.start > 0 && it.start <= t) now = it;
+            } catch (Exception ignored) {
+            }
+            final Item prog = now;
+            handler.post(() -> seekToWallClock(gen, prog == null ? 0 : prog.start, prog == null ? null : prog.title));
+        }).start();
+    }
+
+    private void seekToWallClock(int gen, long startMs, String title) {
+        if (gen != playGen || player == null) return;
+        androidx.media3.common.Timeline.Window w = liveWindow();
+        long pos = 0;
+        boolean partial = startMs <= 0;
+        if (startMs > 0 && w != null && w.windowStartTimeMs != androidx.media3.common.C.TIME_UNSET) {
+            pos = startMs - w.windowStartTimeMs;
+            if (pos < 0) {
+                pos = 0;
+                partial = true;
+            }
+        }
+        player.seekTo(pos);
+        player.setPlayWhenReady(true);
+        String t = title == null ? "" : title + "\n";
+        showBanner(partial
+                ? "⏮ " + t + "מתחיל מהנקודה המוקדמת ביותר שהערוץ שומר (" + fmtDur(liveWindowMs()) + " אחורה)"
+                : "⏮ " + t + "מתחילת התוכנית");
     }
 
     private void showRadioPanel(int idx, String status) {
@@ -1581,6 +1722,7 @@ public class MainActivity extends Activity {
             }
             if (link.startsWith("/")) link = "https://www.kan.org.il" + link;
             Item it = new Item(t, link, time);
+            it.start = start;
             it.enabled = !"#".equals(link) && !link.isEmpty() && start < now;
             out.add(it);
         }
@@ -1816,7 +1958,8 @@ public class MainActivity extends Activity {
                 okLong = false;
             } else if (okPressed && !okLong && e.getRepeatCount() >= 2) {
                 okLong = true;
-                setCursorMode(true);
+                if (nativeActive && !vodPlaying) togglePlayPause();
+                else setCursorMode(true);
             }
         } else if (e.getAction() == KeyEvent.ACTION_UP) {
             if (okPressed && !okLong) shortAction.run();
@@ -1961,9 +2104,20 @@ public class MainActivity extends Activity {
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                // Xiaomi-style remotes have no menu key: side arrows open the pointer
-                // so you can click things on the page (cookie notices, play buttons...).
-                if (down && e.getRepeatCount() == 0) setCursorMode(true);
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+                if (nativeActive) {
+                    // Built-in player: rewind / fast-forward within what the channel keeps (timeshift).
+                    if (down) {
+                        int r = e.getRepeatCount();
+                        long step = r > 8 ? 120_000 : r > 3 ? 30_000 : 10_000;
+                        boolean back = code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_MEDIA_REWIND;
+                        if (r == 0 || r % 2 == 0) liveSeekBy(back ? -step : step);
+                    }
+                    return true;
+                }
+                // Web page: side arrows open the pointer so you can click things on the page.
+                if (down && e.getRepeatCount() == 0 && code <= KeyEvent.KEYCODE_DPAD_RIGHT) setCursorMode(true);
                 return true;
             case KeyEvent.KEYCODE_INFO:
                 if (down && e.getRepeatCount() == 0 && current >= 0)
