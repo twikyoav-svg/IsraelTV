@@ -212,6 +212,7 @@ public class MainActivity extends Activity {
         buildUi();
 
         handler.postDelayed(prefetchRunner, 8000);
+        if (AutoStart.enabled(this)) AutoStart.startService(this, false);
         int last = prefs.getInt(KEY_LAST, -1);
         if (last >= 0 && last < channels.size()) {
             playChannel(last);
@@ -617,6 +618,11 @@ public class MainActivity extends Activity {
         });
         channelListView.addView(fast);
 
+        boolean auto = AutoStart.enabled(this);
+        Button autoBtn = makeButton("🔌  פתיחה אוטומטית בהדלקת הסטרימר: " + (auto ? "פועל" : "כבוי"), false);
+        autoBtn.setOnClickListener(v -> toggleAutoStart());
+        channelListView.addView(autoBtn);
+
         Button add = makeButton("＋  הוספת ערוץ", false);
         add.setOnClickListener(v -> editChannelDialog(-1));
         channelListView.addView(add);
@@ -634,6 +640,46 @@ public class MainActivity extends Activity {
                 .setNegativeButton("ביטול", null)
                 .show());
         channelListView.addView(reset);
+    }
+
+    private void toggleAutoStart() {
+        boolean on = !AutoStart.enabled(this);
+        prefs.edit().putBoolean(AutoStart.KEY_AUTOSTART, on).apply();
+        if (!on) {
+            AutoStart.stopService(this);
+            showBanner("פתיחה אוטומטית כבויה");
+        } else {
+            AutoStart.startService(this, false);
+            if (!AutoStart.canOpenFromBackground(this)) {
+                new AlertDialog.Builder(this)
+                        .setTitle("צריך עוד אישור אחד")
+                        .setMessage("כדי שהאפליקציה תוכל להיפתח לבד, צריך לאשר לה \"הצגה מעל אפליקציות אחרות\".\n\n"
+                                + "לחץ \"לאישור\" ובמסך שנפתח הפעל את \"ערוצי ישראל\".\n\n"
+                                + "אם המסך לא נפתח: הגדרות ← אפליקציות ← גישה מיוחדת לאפליקציות ← "
+                                + "הצגה מעל אפליקציות אחרות ← ערוצי ישראל ← הפעל.")
+                        .setPositiveButton("לאישור", (d, w) -> openOverlaySettings())
+                        .setNegativeButton("אחר כך", null)
+                        .show();
+            } else {
+                showBanner("פתיחה אוטומטית פועלת ✓");
+            }
+        }
+        rebuildList();
+        focusFirst();
+    }
+
+    private void openOverlaySettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        String[] actions = {android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS};
+        for (String a : actions) {
+            try {
+                startActivity(new android.content.Intent(a, android.net.Uri.parse("package:" + getPackageName())));
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+        showBanner("פתח ידנית: הגדרות ← אפליקציות ← גישה מיוחדת ← הצגה מעל אפליקציות אחרות");
     }
 
     private void addSectionLabel(String text) {
