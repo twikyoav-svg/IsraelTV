@@ -15,17 +15,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
       - name: Build
-        run: gradle assembleRelease --no-daemon
-
-      - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk IsraelTV.apk
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q gradle-8.7-bin.zip -d "$HOME/gradle"
+          "$HOME/gradle/gradle-8.7/bin/gradle" assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk IsraelTV.apk
 
       - uses: actions/upload-artifact@v4
         with:
