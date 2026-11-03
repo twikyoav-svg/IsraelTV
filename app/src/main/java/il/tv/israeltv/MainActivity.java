@@ -204,6 +204,7 @@ public class MainActivity extends Activity {
         loadChannels();
         buildUi();
 
+        handler.postDelayed(prefetchRunner, 8000);
         int last = prefs.getInt(KEY_LAST, -1);
         if (last >= 0 && last < channels.size()) {
             playChannel(last);
@@ -861,6 +862,43 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ---- background refresh for channels that only have "sniff" (e.g. Channel 12),
+    // so switching to them uses a ready stream instead of loading the site first.
+    private static final long PREFETCH_EVERY_MS = 10 * 60 * 1000;
+    private final Runnable prefetchRunner = new Runnable() {
+        @Override
+        public void run() {
+            prefetchNext(0);
+            handler.postDelayed(this, PREFETCH_EVERY_MS);
+        }
+    };
+
+    private boolean sniffOnly(int idx) {
+        String st = channels.get(idx)[C_STREAM].trim().toLowerCase(Locale.US);
+        return st.startsWith("sniff") && !isRadio(idx);
+    }
+
+    private void prefetchNext(int from) {
+        for (int k = from; k < channels.size(); k++) {
+            if (!sniffOnly(k)) continue;
+            String name = channels.get(k)[C_NAME];
+            String[] cached = streamCache.get(name);
+            if (cached != null && System.currentTimeMillis() - Long.parseLong(cached[1]) < PREFETCH_EVERY_MS) continue;
+            // Only when nothing else uses the hidden browser.
+            if (sniffing || scrapeCallback != null || vodScreen.getVisibility() == View.VISIBLE) {
+                final int retry = k;
+                handler.postDelayed(() -> prefetchNext(retry), 30000);
+                return;
+            }
+            final int next = k + 1;
+            sniff(channels.get(k)[C_PAGE], url -> {
+                if (url != null) streamCache.put(name, new String[]{url, String.valueOf(System.currentTimeMillis())});
+                handler.postDelayed(() -> prefetchNext(next), 2000);
+            });
+            return;
+        }
+    }
+
     private void sniffThen(int gen, int idx, List<String> cands, int i) {
         if (isRadio(idx)) setRadioStatus("מחפש את השידור באתר…");
         sniff(channels.get(idx)[C_PAGE], url -> {
@@ -1259,7 +1297,13 @@ public class MainActivity extends Activity {
 
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                if (sniffing) sniffRequest(request.getUrl().toString());
+                if (sniffing) {
+                    String u = request.getUrl().toString();
+                    sniffRequest(u);
+                    // Only the player matters while looking for the stream: skip pictures, fonts, styles.
+                    String path = request.getUrl().getPath() == null ? "" : request.getUrl().getPath().toLowerCase(Locale.US);
+                    if (path.matches(".*\\.(jpg|jpeg|png|gif|webp|svg|ico|woff2?|ttf|otf|css)$")) return emptyResponse();
+                }
                 return blockSlow && isSlowHost(request.getUrl().getHost()) ? emptyResponse() : null;
             }
 
