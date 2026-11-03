@@ -809,7 +809,25 @@ public class MainActivity extends Activity {
 
     private androidx.media3.exoplayer.ExoPlayer ensurePlayer() {
         if (player == null) {
-            player = new androidx.media3.exoplayer.ExoPlayer.Builder(this).build();
+            // Assume a fast connection so streams start at a high-quality variant (better picture and
+            // sound from the first second) instead of starting low and climbing up.
+            androidx.media3.exoplayer.upstream.DefaultBandwidthMeter meter =
+                    new androidx.media3.exoplayer.upstream.DefaultBandwidthMeter.Builder(this)
+                            .setInitialBitrateEstimate(8_000_000L)
+                            .build();
+            androidx.media3.exoplayer.trackselection.DefaultTrackSelector selector =
+                    new androidx.media3.exoplayer.trackselection.DefaultTrackSelector(this);
+            selector.setParameters(selector.buildUponParameters()
+                    .setPreferredAudioLanguage("he")
+                    .setAllowAudioMixedChannelCountAdaptiveness(true));
+            player = new androidx.media3.exoplayer.ExoPlayer.Builder(this)
+                    .setBandwidthMeter(meter)
+                    .setTrackSelector(selector)
+                    .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
+                            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                            .build(), true)
+                    .build();
             playerView.setPlayer(player);
         }
         return player;
