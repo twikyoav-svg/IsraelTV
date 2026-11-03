@@ -39,6 +39,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import android.webkit.JavascriptInterface;
+import android.webkit.WebResourceResponse;
+
+import java.io.ByteArrayInputStream;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -79,6 +82,7 @@ public class MainActivity extends Activity {
     private static final String KEY_LAST = "last";
     private static final String KEY_FILL = "fill";
     private static final String KEY_DESKTOP = "desktop";
+    private static final String KEY_BLOCK = "blockSlow";
 
     private static final String DESKTOP_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -112,6 +116,9 @@ public class MainActivity extends Activity {
     private int current = -1;
     private boolean fillMode;
     private boolean desktopMode;
+    private volatile boolean blockSlow;
+    private boolean okPressed;
+    private boolean okLong;
     private boolean cursorMode = false;
     private float cursorX, cursorY;
     private long lastBack = 0;
@@ -159,6 +166,7 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         fillMode = prefs.getBoolean(KEY_FILL, true);
         desktopMode = prefs.getBoolean(KEY_DESKTOP, true);
+        blockSlow = prefs.getBoolean(KEY_BLOCK, true);
         loadChannels();
         buildUi();
 
@@ -274,9 +282,19 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                // Start looking for the video right away instead of waiting for every ad/tracker to finish.
+                if (!"about:blank".equals(url)) schedulePlayerTweaks();
+            }
+
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return blockSlow && isSlowHost(request.getUrl().getHost()) ? emptyResponse() : null;
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
-                schedulePlayerTweaks();
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
@@ -366,7 +384,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         TextView hint = new TextView(this);
-        hint.setText("לחיצה ארוכה על ערוץ = עריכה  ·  למעלה/למטה = החלפת ערוץ  ·  חזור פעמיים = יציאה");
+        hint.setText("OK ארוך על ערוץ = עריכה  ·  בצפייה: למעלה/למטה = ערוץ, ימינה/שמאלה = עכבר  ·  חזור פעמיים = יציאה");
         hint.setTextColor(0xFFAFC4E6);
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         hint.setPadding(0, dp(10), 0, 0);
@@ -478,6 +496,16 @@ public class MainActivity extends Activity {
             if (current >= 0) playChannel(current);
         });
         channelListView.addView(ua);
+
+        Button fast = makeButton("⚡  טעינה מהירה (דילוג על רכיבי מעקב): " + (blockSlow ? "פועל" : "כבוי"), false);
+        fast.setOnClickListener(v -> {
+            blockSlow = !blockSlow;
+            prefs.edit().putBoolean(KEY_BLOCK, blockSlow).apply();
+            rebuildList();
+            focusFirst();
+            if (current >= 0) playChannel(current);
+        });
+        channelListView.addView(fast);
 
         Button add = makeButton("＋  הוספת ערוץ", false);
         add.setOnClickListener(v -> editChannelDialog(-1));
@@ -595,10 +623,56 @@ public class MainActivity extends Activity {
         current = idx;
         prefs.edit().putInt(KEY_LAST, idx).apply();
         String[] c = channels.get(idx);
-        showBanner((idx + 1) + "  ·  " + c[0]);
+        showBanner((idx + 1) + "  ·  " + c[0] + "\n← → = מצב עכבר  ·  OK = רשימת ערוצים");
         handler.removeCallbacks(tweakRunner);
+        handler.removeCallbacks(switchRunner);
+        pendingChannel = -1;
         webView.stopLoading();
         webView.loadUrl(c[1]);
+    }
+
+    // ---- fast zapping: show the target immediately, load only when the user stops pressing.
+    private int pendingChannel = -1;
+    private final Runnable switchRunner = () -> {
+        if (pendingChannel >= 0) {
+            int p = pendingChannel;
+            pendingChannel = -1;
+            playChannel(p);
+        }
+    };
+
+    private void zap(int delta) {
+        if (channels.isEmpty()) return;
+        int n = channels.size();
+        int base = pendingChannel >= 0 ? pendingChannel : Math.max(current, 0);
+        int target = ((base + delta) % n + n) % n;
+        pendingChannel = target;
+        showBanner((target + 1) + "  ·  " + channels.get(target)[0]);
+        handler.removeCallbacks(switchRunner);
+        handler.postDelayed(switchRunner, 450);
+    }
+
+    // ---- skip loading trackers / recommendation widgets that slow the sites down
+    private static final String[] SLOW_HOSTS = {
+            "taboola.com", "outbrain.com", "outbrainimg.com", "connect.facebook.net", "facebook.com",
+            "hotjar.com", "hotjar.io", "clarity.ms", "scorecardresearch.com", "chartbeat.com",
+            "chartbeat.net", "heyday.io", "criteo.com", "criteo.net", "teads.tv", "mgid.com",
+            "tiktok.com", "analytics.tiktok.com", "doubleverify.com", "moatads.com", "quantserve.com",
+            "newrelic.com", "nr-data.net", "sentry.io", "onesignal.com", "pushwoosh.com",
+            "twitter.com", "platform.twitter.com", "instagram.com", "linkedin.com", "pinterest.com",
+            "yandex.ru", "mc.yandex.ru", "glassbox.com", "cdn.glassboxcdn.com", "survicate.com",
+    };
+
+    private static boolean isSlowHost(String host) {
+        if (host == null) return false;
+        for (String h : SLOW_HOSTS) {
+            if (host.equals(h) || host.endsWith("." + h)) return true;
+        }
+        return false;
+    }
+
+    private static WebResourceResponse emptyResponse() {
+        return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
     }
 
     private int tweakCount = 0;
@@ -606,19 +680,46 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             webView.evaluateJavascript(playerScript(), null);
-            if (++tweakCount < 12) handler.postDelayed(this, 2500);
+            int n = ++tweakCount;
+            if (n < 45) handler.postDelayed(this, n < 15 ? 700 : 2000);
         }
     };
 
-    /** Runs the autoplay / fill-screen script a few times while the player loads. */
+    /** Runs the autoplay / fill-screen / cookie-banner script repeatedly while the page loads. */
     private void schedulePlayerTweaks() {
         handler.removeCallbacks(tweakRunner);
         tweakCount = 0;
-        handler.postDelayed(tweakRunner, 1200);
+        handler.postDelayed(tweakRunner, 500);
     }
 
+    /**
+     * Closes cookie / consent banners. Prefers "reject" / "necessary only", then "close",
+     * and only then "accept".
+     */
+    private static final String COOKIE_SCRIPT =
+            "function itvVis(e){try{var r=e.getBoundingClientRect();var s=getComputedStyle(e);"
+            + "return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';}catch(x){return false;}}"
+            + "function itvCookies(){"
+            + "var known=['#onetrust-reject-all-handler','.fc-cta-do-not-consent','#CybotCookiebotDialogBodyButtonDecline',"
+            + "'#onetrust-close-btn-container button','.onetrust-close-btn-handler','#onetrust-accept-btn-handler',"
+            + "'.fc-cta-consent','#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll'];"
+            + "for(var i=0;i<known.length;i++){var k=document.querySelector(known[i]);"
+            + "if(k&&itvVis(k)&&!k.__itvc){k.__itvc=1;k.click();return;}}"
+            + "var pri=[/^(דחה|דחייה|דחיה|דחה הכל|סרב|לא מסכים|רק הכרחיות|רק עוגיות הכרחיות|reject|reject all|decline|necessary only)$/i,"
+            + "/^(סגור|סגירה|×|✕|✖|x|close)$/i,"
+            + "/^(אישור|אשר|אשר הכל|אני מסכים|אני מסכימה|מסכים|מאשר|אני מאשר|הבנתי|קבל|קבלה|המשך|accept|accept all|agree|i agree|ok|got it)$/i];"
+            + "var all=Array.prototype.slice.call(document.querySelectorAll('button,a,[role=button],[onclick],input[type=button],input[type=submit]'));"
+            + "var c=all.filter(function(b){if(b.__itvc||!itvVis(b))return false;var p=b;"
+            + "for(var d=0;d<7&&p;d++){p=p.parentElement;if(!p)break;var t=p.innerText||'';"
+            + "if(t.length<2500&&/עוגיות|עוגייה|cookie|קוקיז/i.test(t))return true;}return false;});"
+            + "for(var j=0;j<pri.length;j++){for(var m=0;m<c.length;m++){"
+            + "var tx=((c[m].innerText||c[m].value||'')+'').replace(/\\s+/g,' ').trim();"
+            + "if(!tx)tx=(c[m].getAttribute('aria-label')||c[m].getAttribute('title')||'').trim();"
+            + "if(pri[j].test(tx)){c[m].__itvc=1;c[m].click();return;}}}}"
+            + "try{itvCookies();}catch(x){}";
+
     private String playerScript() {
-        return "(function(){"
+        return "(function(){" + COOKIE_SCRIPT
                 + "var fill=" + fillMode + ";"
                 + "function big(list){var best=null,area=0;for(var i=0;i<list.length;i++){"
                 + "var r=list[i].getBoundingClientRect();var a=r.width*r.height;"
@@ -733,6 +834,11 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String scheme = request.getUrl().getScheme();
                 return !("http".equals(scheme) || "https".equals(scheme));
+            }
+
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return blockSlow && isSlowHost(request.getUrl().getHost()) ? emptyResponse() : null;
             }
 
             @Override
@@ -1105,7 +1211,7 @@ public class MainActivity extends Activity {
         webView.stopLoading();
         webView.loadUrl(item.url);
         webView.requestFocus();
-        showBanner(item.title + "\nOK = הפעלה/השהיה · ימינה/שמאלה = דילוג · תפריט = מצב עכבר");
+        showBanner(item.title + "\nOK = הפעלה/השהיה · ימינה/שמאלה = דילוג · למעלה/למטה או OK ארוך = מצב עכבר");
     }
 
     private void openPageWithMouse(String url) {
@@ -1212,6 +1318,23 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- remote control
 
+    /** OK key: short press runs shortAction (on release), holding it opens mouse mode. */
+    private boolean handleOk(KeyEvent e, Runnable shortAction) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            if (e.getRepeatCount() == 0) {
+                okPressed = true;
+                okLong = false;
+            } else if (okPressed && !okLong && e.getRepeatCount() >= 2) {
+                okLong = true;
+                setCursorMode(true);
+            }
+        } else if (e.getAction() == KeyEvent.ACTION_UP) {
+            if (okPressed && !okLong) shortAction.run();
+            okPressed = false;
+        }
+        return true;
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
         int code = e.getKeyCode();
@@ -1245,7 +1368,7 @@ public class MainActivity extends Activity {
 
         // ---- mouse mode
         if (cursorMode) {
-            int step = dp(e.getRepeatCount() > 6 ? 40 : e.getRepeatCount() > 2 ? 22 : 12);
+            int step = dp(e.getRepeatCount() > 6 ? 45 : e.getRepeatCount() > 2 ? 25 : 15);
             switch (code) {
                 case KeyEvent.KEYCODE_DPAD_UP:
                     if (down) moveCursor(0, -step);
@@ -1291,6 +1414,8 @@ public class MainActivity extends Activity {
                 case KeyEvent.KEYCODE_DPAD_CENTER:
                 case KeyEvent.KEYCODE_ENTER:
                 case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                    // short press = play/pause, long press = mouse mode
+                    return handleOk(e, this::togglePlayPause);
                 case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
                 case KeyEvent.KEYCODE_MEDIA_PLAY:
                 case KeyEvent.KEYCODE_MEDIA_PAUSE:
@@ -1298,7 +1423,7 @@ public class MainActivity extends Activity {
                     return true;
                 case KeyEvent.KEYCODE_DPAD_UP:
                 case KeyEvent.KEYCODE_DPAD_DOWN:
-                    if (first) showBanner("OK = הפעלה/השהיה · ימינה/שמאלה = דילוג · תפריט = מצב עכבר · חזור = לרשימה");
+                    if (first) setCursorMode(true);
                     return true;
                 case KeyEvent.KEYCODE_MENU:
                     if (first) setCursorMode(true);
@@ -1328,22 +1453,28 @@ public class MainActivity extends Activity {
             case KeyEvent.KEYCODE_CHANNEL_UP:
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_PAGE_UP:
-                if (down && e.getRepeatCount() == 0) playChannel(current + 1);
+                if (down && e.getRepeatCount() % 3 == 0) zap(1);
                 return true;
             case KeyEvent.KEYCODE_CHANNEL_DOWN:
             case KeyEvent.KEYCODE_DPAD_DOWN:
             case KeyEvent.KEYCODE_PAGE_DOWN:
-                if (down && e.getRepeatCount() == 0) playChannel(current - 1);
+                if (down && e.getRepeatCount() % 3 == 0) zap(-1);
                 return true;
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                // short press = channel list, long press = mouse mode
+                return handleOk(e, this::showOverlay);
             case KeyEvent.KEYCODE_MENU:
             case KeyEvent.KEYCODE_GUIDE:
                 if (down && e.getRepeatCount() == 0) showOverlay();
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
+                // Xiaomi-style remotes have no menu key: side arrows open the pointer
+                // so you can click things on the page (cookie notices, play buttons...).
+                if (down && e.getRepeatCount() == 0) setCursorMode(true);
+                return true;
             case KeyEvent.KEYCODE_INFO:
                 if (down && e.getRepeatCount() == 0 && current >= 0)
                     showBanner((current + 1) + "  ·  " + channels.get(current)[0]);
