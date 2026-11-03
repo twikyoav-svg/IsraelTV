@@ -20,9 +20,11 @@ jobs:
           wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
           unzip -q gradle-8.7-bin.zip -d "$HOME/gradle"
           "$HOME/gradle/gradle-8.7/bin/gradle" assembleRelease --no-daemon --stacktrace
-          cp app/build/outputs/apk/release/app-release.apk IsraelTV.apk
+          VERSION=$(grep -oP "versionName\s+'\K[^']+" app/build.gradle)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/release/app-release.apk "IsraelTV-v$VERSION.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: IsraelTV-apk
-          path: IsraelTV.apk
+          name: IsraelTV-v${{ env.VERSION }}
+          path: IsraelTV-v${{ env.VERSION }}.apk

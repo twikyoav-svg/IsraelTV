@@ -420,7 +420,12 @@ public class MainActivity extends Activity {
         overlay.setVisibility(View.GONE);
 
         TextView title = new TextView(this);
-        title.setText("ערוצים");
+        String ver = "";
+        try {
+            ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        title.setText("ערוצים" + (ver.isEmpty() ? "" : "   ·   גרסה " + ver));
         title.setTextColor(Color.WHITE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
         title.setTypeface(Typeface.DEFAULT_BOLD);
