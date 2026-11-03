@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180 TV launcher banner -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:fillColor="#0B1E3F" android:pathData="M0,0h320v180h-320z" />
+    <path android:fillColor="#1F5FBF" android:pathData="M0,150h320v30h-320z" />
+    <!-- TV screen -->
+    <path android:fillColor="#FFFFFF" android:pathData="M40,40h120v80h-120z" />
+    <path android:fillColor="#0B1E3F" android:pathData="M48,48h104v64h-104z" />
+    <!-- play triangle -->
+    <path android:fillColor="#FFFFFF" android:pathData="M88,62L88,98L118,80Z" />
+    <!-- stand -->
+    <path android:fillColor="#FFFFFF" android:pathData="M90,120h20v10h-20z M75,130h50v6h-50z" />
+    <!-- star of david -->
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="5"
+        android:pathData="M235,45L265,97L205,97Z M235,115L205,63L265,63Z" />
+</vector>

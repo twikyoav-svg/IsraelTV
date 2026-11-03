@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'il.tv.israeltv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'il.tv.israeltv'
+        minSdk 21
+        targetSdk 34
+        versionCode 2
+        versionName '1.1'
+    }
+
+    signingConfigs {
+        // Fixed key kept in the project, so every new build installs over the previous one.
+        fixed {
+            storeFile file('israeltv.keystore')
+            storePassword 'israeltv'
+            keyAlias 'israeltv'
+            keyPassword 'israeltv'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
